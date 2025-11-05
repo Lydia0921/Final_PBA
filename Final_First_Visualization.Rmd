@@ -1,0 +1,55 @@
+---
+title: "Final_First_Visualization"
+author: '111071048'
+date: "2025-11-05"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Load package and file
+
+```{r}
+library(tidyverse)
+library(stringr)
+
+# read CSV 
+df <- read_csv(
+  "Drug_overdose_death_rates__by_drug_type__sex__age__race__and_Hispanic_origin__United_States.csv",
+  col_types = cols(ESTIMATE = col_character())
+)
+
+# Clean
+df_clean <- df %>%
+  rename(
+    drug_type = PANEL,
+    unit = UNIT,
+    group_category = STUB_NAME,
+    group_label = STUB_LABEL,
+    year = YEAR,
+    age = AGE,
+    death_rate = ESTIMATE
+  ) %>%
+  mutate(
+    death_rate = na_if(death_rate, "*"),
+    death_rate = as.numeric(death_rate)
+  ) %>%
+  mutate(across(c(drug_type, unit, group_category, group_label, age), as.factor)) %>%
+  filter(
+    unit == "Deaths per 100,000 resident population, age-adjusted",
+    age == "All ages"
+  )
+
+glimpse(df_clean)
+```
+
+## Including Plots
+
+
+
+```{r}
+
+```
+
