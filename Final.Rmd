@@ -1,0 +1,136 @@
+---
+title: "final"
+author: '111071048'
+date: "2025-12-13"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(janitor) 
+
+```
+
+
+```{r}
+#install.packages("janitor")
+#install.packages("visdat")
+#install.packages("naniar")
+```
+
+```{r}
+getwd()
+```
+
+# 1. Data
+ Population file (Annual state-level data)
+ Source: [https://wonder.cdc.gov/mcd-icd10.html](https://wonder.cdc.gov/mcd-icd10.html)
+```{r}
+# List of drug mortality files
+# Keys represent the drug type, values are filenames
+drug_files <- list(
+  "Heroin"               = "T40.1 (Heroin) Multiple Cause of Death, 1999-2020.csv",
+  "Prescription_Opioids" = "T40.2 (Other opioids) Multiple Cause of Death, 1999-2020.csv",
+  "Methadone"            = "T40.3 (Methadone) Multiple Cause of Death, 1999-2020.csv",
+  "Synthetic_Opioids"    = " T40.4 (Other synthetic narcotics) Multiple Cause of Death, 1999-2020.csv"
+)
+
+
+pop_file <- "us_state_population.csv"
+```
+
+## 2. Load and Process Drug Mortality Data
+
+This step iterates through the file list, reads the CSVs, cleans the column names, and removes CDC footer notes.
+
+```{r}
+# Function to read and merge data
+# uses map_dfr to read each file and row-bind them into one dataframe
+df_drugs <- map_dfr(names(drug_files), function(drug_name) {
+  
+  file_path <- drug_files[[drug_name]]
+  
+  # Read CSV
+  # CDC WONDER data usually contains footer notes. 
+  # We define specific strings as NA to handle suppressed or missing data.
+  temp_df <- read_csv(file_path, show_col_types = FALSE, 
+                      na = c("", "NA", "Not Applicable", "Suppressed", "Unreliable", "Missing")) %>%
+    clean_names() %>%            # Standardize column names (lowercase, snake_case)
+    filter(!is.na(state)) %>%    # Remove footer rows where 'State' is empty
+    filter(is.na(notes)) %>%     # Double check to ensure note rows are removed
+    mutate(drug_type = drug_name) # Add a column to identify the drug type
+  
+  return(temp_df)
+})
+```
+
+## 3. Load and Process Population Data
+
+Load the annual population data to calculate accurate mortality rates later.
+
+```{r load_pop}
+df_pop <- read_csv(pop_file, show_col_types = FALSE,
+                   na = c("", "NA", "Not Applicable", "Suppressed", "Missing")) %>%
+  clean_names() %>%
+  # Keep only necessary columns: State, Year, Population
+  select(state, year, population_annual = population) %>%
+  # Ensure numeric types
+  mutate(year = as.numeric(year),
+         population_annual = as.numeric(population_annual)) %>%
+  filter(!is.na(population_annual)) # Ensure valid population data
+```
+
+## 4. Merge Data and Calculate Mortality Rates
+
+Merge the monthly drug death data with the annual population data to calculate the crude mortality rate per 100,000 people.
+
+```{r}
+df_final <- df_drugs %>%
+  # 1. Ensure numeric formats for year and deaths
+  mutate(year = as.numeric(year),
+         deaths = as.numeric(deaths),
+         # Create a proper date column (optional, useful for plotting)
+         date = as.Date(paste0(month_code, "/01"), format = "%Y/%m/%d")) %>%
+  
+  # 2. Remove the original population/rate columns from monthly files (as they contain NAs)
+  select(-population, -crude_rate, -notes) %>%
+  
+  # 3. Join with annual population data based on State and Year
+  left_join(df_pop, by = c("state", "year")) %>%
+  
+  # 4. Calculate Mortality Rate per 100,000 population
+  mutate(
+    mortality_rate = (deaths / population_annual) * 100000
+  ) %>%
+  
+  # Sort the data
+  arrange(state, year, drug_type)
+```
+
+## 5. Final Checks and Export
+
+Review the structure of the final dataset and save it to a CSV file.
+
+```{r}
+# Preview the first few rows
+print(head(df_final))
+
+# Check data distribution by drug type
+table(df_final$drug_type)
+
+# Summary statistics
+summary(df_final)
+
+# Check for missing population data
+missing_pop <- sum(is.na(df_final$population_annual))
+print(paste("Rows with missing population data:", missing_pop))
+
+# Save the final consolidated dataset
+write_csv(df_final, "final_opioid_analysis_data.csv")
+```
+
+```
