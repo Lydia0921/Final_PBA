@@ -1,0 +1,391 @@
+---
+title: "final_report"
+author: "Yung-Ni Chen"
+date: "2025-12-24"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(lubridate)
+library(fixest)
+
+# 1. 讀取資料 (請確認檔案路徑是否正確)
+# 假設檔案在你的工作目錄，如果不是請改路徑
+df <- read.csv("opioid_data.csv", stringsAsFactors = FALSE)
+```
+
+```{r}
+# 2. 資料清洗
+df_clean <- df %>%
+  # 【修改點 1】改選 Ohio 和 Michigan
+  filter(state %in% c("Ohio", "Michigan")) %>%
+  
+  # 這裡我們先不刪除 Methadone，讓它歸類在 Other，以免你之後想看
+  # 如果要完全照朋友的邏輯刪除，可以取消下面這行的註解
+  # filter(drug_type != "Methadone") %>%
+
+  # 處理時間：把 "Jan., 2007" 變成日期格式 "2007-01-01"
+  mutate(
+    month_str = str_sub(month, 1, 3),      # 抓出 "Jan"
+    month_num = match(month_str, month.abb), # 轉成數字 1
+    date = make_date(year, month_num, 1)     # 合成日期
+  ) %>%
+
+  # 建立藥物分類 (Legal vs Illegal)
+  mutate(
+    drug_category = case_when(
+      drug_type == "Prescription_Opioids" ~ "Legal",
+      drug_type %in% c("Heroin", "Synthetic_Opioids") ~ "Illegal",
+      TRUE ~ "Other" # Methadone 會跑來這裡
+    )
+  ) %>%
+  
+  # 只留下 Legal 和 Illegal 進行主要分析 (排除了 Methadone)
+  filter(drug_category != "Other")
+
+# 3. 聚合資料：算出每個月、每個州的總死亡率
+# (因為原始資料可能分很細，我們要把它加總起來)
+df_final <- df_clean %>%
+  group_by(state, date, year, drug_category) %>%
+  summarise(
+    mortality_rate = sum(mortality_rate, na.rm = TRUE),
+    deaths = sum(deaths, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# 4. 算出「全部藥物 (Total)」的數據 (把 Legal 和 Illegal 加在一起)
+df_total <- df_final %>%
+  group_by(state, date, year) %>%
+  summarise(
+    mortality_rate = sum(mortality_rate, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# 檢查一下資料有沒有成功跑出來
+head(df_total)
+```
+
+```{r}
+# --- Chunk 2: Set Dates ---
+
+# 【修改點 2】Ohio HB 93 政策時間點，設定為 2011年6月1日
+date_policy_real <- as.Date("2011-06-01")
+
+# Placebo (偽安慰劑測試) 時間點，維持 2009年
+date_placebo <- as.Date("2009-01-01")
+
+# 毒品波段 (全美通用)
+date_line_1 <- as.Date("2010-01-01") # Heroin wave start
+date_line_2 <- as.Date("2013-01-01") # Synthetic wave start
+```
+
+```{r}
+# --- Chunk 3: Part 1 Trends ---
+
+# (1) 全部藥物 Mortality Rate
+p1_1 <- ggplot(df_total, aes(x = date, y = mortality_rate, color = state)) +
+  geom_line(linewidth = 1) + # 新版 ggplot 用 linewidth
+  geom_point(size = 1.5, alpha = 0.6) +
+  geom_vline(xintercept = date_policy_real, linetype = "dashed", color = "black") +
+  labs(title = "(1-1) Total Opioid Mortality Rate (Ohio vs MI)", 
+       subtitle = paste("Dashed Line:", date_policy_real)) +
+  theme_minimal() +
+  scale_color_manual(values = c("Ohio" = "red", "Michigan" = "blue")) # 設定顏色方便辨識
+
+print(p1_1)
+
+# 計算前後平均 (Total)
+mean_total <- df_total %>%
+  mutate(period = ifelse(date < date_policy_real, "Pre-Policy", "Post-Policy")) %>%
+  group_by(state, period) %>%
+  summarise(avg_rate = mean(mortality_rate), .groups = "drop")
+print(mean_total)
+
+
+# (2) 合法藥物 (Legal)
+p1_2 <- df_final %>% filter(drug_category == "Legal") %>%
+  ggplot(aes(x = date, y = mortality_rate, color = state)) +
+  geom_line(linewidth = 1) +
+  geom_vline(xintercept = date_policy_real, linetype = "dashed", color = "black") +
+  labs(title = "(1-2) Legal (Prescription) Mortality Rate") +
+  theme_minimal() +
+  scale_color_manual(values = c("Ohio" = "red", "Michigan" = "blue"))
+
+print(p1_2)
+
+# 計算前後平均 (Legal)
+mean_legal <- df_final %>%
+  filter(drug_category == "Legal") %>%
+  mutate(period = ifelse(date < date_policy_real, "Pre-Policy", "Post-Policy")) %>%
+  group_by(state, period) %>%
+  summarise(avg_rate = mean(mortality_rate), .groups = "drop")
+print(mean_legal)
+
+
+# (3) 非法藥物 (Illegal) - 這是觀察替代效應的重點！
+p1_3 <- df_final %>% filter(drug_category == "Illegal") %>%
+  ggplot(aes(x = date, y = mortality_rate, color = state)) +
+  geom_line(linewidth = 1) +
+  geom_vline(xintercept = date_policy_real, linetype = "dashed", color = "black") +
+  labs(title = "(1-3) Illegal (Heroin/Synthetic) Mortality Rate") +
+  theme_minimal() +
+  scale_color_manual(values = c("Ohio" = "red", "Michigan" = "blue"))
+
+print(p1_3)
+
+# 計算前後平均 (Illegal)
+mean_illegal <- df_final %>%
+  filter(drug_category == "Illegal") %>%
+  mutate(period = ifelse(date < date_policy_real, "Pre-Policy", "Post-Policy")) %>%
+  group_by(state, period) %>%
+  summarise(avg_rate = mean(mortality_rate), .groups = "drop")
+print(mean_illegal)
+```
+```{r}
+# --- Chunk 4: Part 2 Difference Analysis (Ohio - Michigan) ---
+
+# 1. 定義畫圖函數 (這樣不用重複寫三次)
+plot_difference <- function(data, category_name) {
+  data_diff <- data %>%
+    select(date, state, mortality_rate) %>%
+    # 把資料轉寬，讓 Ohio 和 Michigan 變成兩個欄位方便相減
+    pivot_wider(names_from = state, values_from = mortality_rate) %>%
+    # 【修改點】計算差異：Ohio (實驗組) - Michigan (對照組)
+    mutate(diff = Ohio - Michigan) %>%
+    filter(!is.na(diff))
+
+  ggplot(data_diff, aes(x = date, y = diff)) +
+    geom_line(color = "purple", linewidth = 1) + # 用紫色代表差異
+    geom_hline(yintercept = 0, color = "gray50") + # 加上 0 的基準線
+    geom_vline(xintercept = date_policy_real, linetype = "dashed", color = "black") +
+    labs(title = paste0("Difference (Ohio - Michigan): ", category_name),
+         y = "Rate Difference (per 100k)") +
+    theme_minimal()
+}
+
+# 2. 畫出三種差異圖
+# (1) 全部藥物 (Total)
+print(plot_difference(df_total, "Total All Drugs"))
+
+# 計算 Total 差異的平均值 (前後比較)
+mean_diff_total <- df_total %>%
+  select(date, state, mortality_rate) %>%
+  pivot_wider(names_from = state, values_from = mortality_rate) %>%
+  mutate(diff = Ohio - Michigan) %>%
+  mutate(period = ifelse(date < date_policy_real, "Pre-Policy", "Post-Policy")) %>%
+  group_by(period) %>%
+  summarise(avg_diff = mean(diff, na.rm = TRUE))
+print(mean_diff_total)
+
+
+# (2) 合法藥物 (Legal)
+df_legal <- df_final %>% filter(drug_category == "Legal")
+print(plot_difference(df_legal, "Legal Drugs"))
+
+# 計算 Legal 差異的平均值
+mean_diff_legal <- df_legal %>%
+  select(date, state, mortality_rate) %>%
+  pivot_wider(names_from = state, values_from = mortality_rate) %>%
+  mutate(diff = Ohio - Michigan) %>%
+  mutate(period = ifelse(date < date_policy_real, "Pre-Policy", "Post-Policy")) %>%
+  group_by(period) %>%
+  summarise(avg_diff = mean(diff, na.rm = TRUE))
+print(mean_diff_legal)
+
+
+# (3) 非法藥物 (Illegal) - 關鍵！
+df_illegal <- df_final %>% filter(drug_category == "Illegal")
+print(plot_difference(df_illegal, "Illegal Drugs"))
+
+# 計算 Illegal 差異的平均值
+mean_diff_illegal <- df_illegal %>%
+  select(date, state, mortality_rate) %>%
+  pivot_wider(names_from = state, values_from = mortality_rate) %>%
+  mutate(diff = Ohio - Michigan) %>%
+  mutate(period = ifelse(date < date_policy_real, "Pre-Policy", "Post-Policy")) %>%
+  group_by(period) %>%
+  summarise(avg_diff = mean(diff, na.rm = TRUE))
+print(mean_diff_illegal)
+```
+```{r}
+# --- Chunk 5: Part 3 Robustness Check (Placebo Test) ---
+
+# 1. 準備數據：只取 2011 年以前的資料 (Pre-Policy Period)
+df_pre_period <- df_final %>% filter(year < 2011)
+df_total_pre <- df_total %>% filter(year < 2011)
+
+# 2. 畫圖檢查 (視覺化)
+# 我們在 2009 年畫一條虛線 (Placebo Date)，看看線有沒有在這邊分岔 (理論上不該分岔)
+
+# (1) 全部藥物 Robustness Plot
+p3_1 <- ggplot(df_total_pre, aes(x = date, y = mortality_rate, color = state)) +
+  geom_line(linewidth = 1) +
+  geom_vline(xintercept = date_placebo, linetype = "dotted", color = "red", linewidth=1) +
+  labs(title = "(3-1) Robustness Check: Total (Placebo 2009)", 
+       subtitle = "Focusing on Pre-2011 trends. Red line: Jan 2009") +
+  theme_minimal() +
+  scale_color_manual(values = c("Ohio" = "red", "Michigan" = "blue"))
+
+print(p3_1)
+
+# (2) 合法藥物 Robustness Plot
+p3_2 <- df_pre_period %>% filter(drug_category == "Legal") %>%
+  ggplot(aes(x = date, y = mortality_rate, color = state)) +
+  geom_line(linewidth = 1) +
+  geom_vline(xintercept = date_placebo, linetype = "dotted", color = "red", linewidth=1) +
+  labs(title = "(3-2) Robustness Check: Legal (Placebo 2009)") +
+  theme_minimal() +
+  scale_color_manual(values = c("Ohio" = "red", "Michigan" = "blue"))
+
+print(p3_2)
+
+# (3) 非法藥物 Robustness Plot
+p3_3 <- df_pre_period %>% filter(drug_category == "Illegal") %>%
+  ggplot(aes(x = date, y = mortality_rate, color = state)) +
+  geom_line(linewidth = 1) +
+  geom_vline(xintercept = date_placebo, linetype = "dotted", color = "red", linewidth=1) +
+  labs(title = "(3-3) Robustness Check: Illegal (Placebo 2009)") +
+  theme_minimal() +
+  scale_color_manual(values = c("Ohio" = "red", "Michigan" = "blue"))
+
+print(p3_3)
+
+
+# 3. 統計檢定 (Placebo Regression)
+# 我們跑一個 DID 模型，但把 "政策時間" 設在 2009 年。
+# 【關鍵預期】交互作用項 (treat:placebo_post) 應該要 "不顯著" (P > 0.05)。
+# 如果顯著，代表兩州在政策前就有明顯差異，那就不好了。
+
+cat("\n--- Statistical Robustness Check (Placebo Regression) ---\n")
+
+run_placebo_reg <- function(data, cat_name) {
+  data_reg <- data %>%
+    mutate(
+      # 【修改點】實驗組改成 Ohio
+      treat = ifelse(state == "Ohio", 1, 0),
+      placebo_post = ifelse(date >= date_placebo, 1, 0)
+    )
+  # 使用 fixest 套件跑固定效應回歸
+  model <- feols(mortality_rate ~ treat * placebo_post | state + date, data = data_reg)
+  print(paste("Category:", cat_name))
+  print(model)
+}
+
+# 執行三個檢定
+run_placebo_reg(df_total_pre, "Total")
+run_placebo_reg(df_pre_period %>% filter(drug_category=="Legal"), "Legal")
+run_placebo_reg(df_pre_period %>% filter(drug_category=="Illegal"), "Illegal")
+```
+```{r}
+# --- Chunk 6: Part 4 Specific Drug Waves ---
+
+# 1. 定義畫圖函數 (包含 2010 和 2013 兩條線)
+plot_specific_drug <- function(drug_name) {
+  df_clean %>%
+    filter(drug_type == drug_name) %>%
+    ggplot(aes(x = date, y = mortality_rate, color = state)) +
+    geom_line(linewidth = 1) +
+    geom_vline(xintercept = date_line_1, linetype = "longdash", color = "gray40") + # 2010 line
+    geom_vline(xintercept = date_line_2, linetype = "longdash", color = "gray40") + # 2013 line
+    labs(title = paste("Trend: ", drug_name),
+         subtitle = "Lines: Jan 2010 & Jan 2013 (Three Waves)") +
+    theme_minimal() +
+    scale_color_manual(values = c("Ohio" = "red", "Michigan" = "blue"))
+}
+
+# (1) 處方藥 (Prescription_Opioids)
+print(plot_specific_drug("Prescription_Opioids"))
+
+# 計算三波段平均值 (Prescription)
+mean_prescription <- df_clean %>%
+  filter(drug_type == "Prescription_Opioids") %>%
+  mutate(wave = case_when(
+    date < date_line_1 ~ "1st wave (<2010)",
+    date >= date_line_1 & date < date_line_2 ~ "2nd wave (2010-13)",
+    date >= date_line_2 ~ "3rd wave (>2013)",
+    TRUE ~ NA_character_
+  )) %>%
+  group_by(state, wave) %>%
+  summarise(avg_rate = mean(mortality_rate), .groups = "drop")
+print(mean_prescription)
+
+
+# (2) 海洛因 (Heroin) - 這是重點！觀察 2nd wave
+print(plot_specific_drug("Heroin"))
+
+# 計算三波段平均值 (Heroin)
+mean_heroin <- df_clean %>%
+  filter(drug_type == "Heroin") %>%
+  mutate(wave = case_when(
+    date < date_line_1 ~ "1st wave (<2010)",
+    date >= date_line_1 & date < date_line_2 ~ "2nd wave (2010-13)",
+    date >= date_line_2 ~ "3rd wave (>2013)",
+    TRUE ~ NA_character_
+  )) %>%
+  group_by(state, wave) %>%
+  summarise(avg_rate = mean(mortality_rate), .groups = "drop")
+print(mean_heroin)
+
+
+# (3) 合成鴉片 (Synthetic_Opioids) - 觀察 3rd wave
+print(plot_specific_drug("Synthetic_Opioids"))
+
+# 計算三波段平均值 (Synthetic)
+mean_synthetic <- df_clean %>%
+  filter(drug_type == "Synthetic_Opioids") %>%
+  mutate(wave = case_when(
+    date < date_line_1 ~ "1st wave (<2010)",
+    date >= date_line_1 & date < date_line_2 ~ "2nd wave (2010-13)",
+    date >= date_line_2 ~ "3rd wave (>2013)",
+    TRUE ~ NA_character_
+  )) %>%
+  group_by(state, wave) %>%
+  summarise(avg_rate = mean(mortality_rate), .groups = "drop")
+print(mean_synthetic)
+```
+```{r}
+# --- Chunk 7: Main DID Regression Analysis ---
+
+# 1. 準備回歸用的資料
+# 我們需要幫每一列資料標上 "Treat" (是不是Ohio) 和 "Post" (是不是2011/6之後)
+df_regression <- df_final %>%
+  mutate(
+    treat = ifelse(state == "Ohio", 1, 0),
+    post = ifelse(date >= as.Date("2011-06-01"), 1, 0)
+  )
+
+# 2. 定義跑回歸的函數 (使用 fixest 套件的 feols)
+run_did_model <- function(data, category_name) {
+  # 過濾出特定藥物種類
+  sub_data <- data %>% filter(drug_category == category_name)
+  
+  # 跑 DID 回歸: mortality_rate 對 treat * post 做回歸
+  # 我們加上 | state + date 是為了控制固定效應 (雖然標準 DID treat*post 也可以)
+  # 這裡用最標準的教科書寫法: treat * post
+  model <- feols(mortality_rate ~ treat * post, data = sub_data)
+  
+  cat(paste0("\n=== DID Results for: ", category_name, " ===\n"))
+  print(model)
+}
+
+# 3. 執行三個模型
+# (1) Legal (合法藥物)
+run_did_model(df_regression, "Legal")
+
+# (2) Illegal (非法藥物) - 這是你的重點！
+run_did_model(df_regression, "Illegal")
+
+# (3) Total (全部藥物) - 這裡需要先過濾 Total 資料
+# 因為 df_final 是分開的，我們用 df_total 來跑
+df_total_reg <- df_total %>%
+  mutate(
+    treat = ifelse(state == "Ohio", 1, 0),
+    post = ifelse(date >= as.Date("2011-06-01"), 1, 0)
+  )
+
+model_total <- feols(mortality_rate ~ treat * post, data = df_total_reg)
+cat("\n=== DID Results for: Total Opioids ===\n")
+print(model_total)
+```
+
