@@ -1,0 +1,373 @@
+---
+title: "PBA_final"
+author: "111072130 Ting Yi, Lai"
+date: "2025-12-24"
+output: html_document
+---
+
+```{r, setup, message = F}
+library(tidyverse)
+library(lubridate)
+library(fixest)
+
+df <- read.csv("~/Downloads/final_opioid_analysis_data.csv", stringsAsFactors = FALSE)
+```
+
+```{r}
+df_clean <- df %>%
+  filter(state %in% c("Florida", "Pennsylvania")) %>%
+  filter(drug_type != "Methadone") %>%
+
+  mutate(
+    month_str = str_sub(month, 1, 3),
+    month_num = match(month_str, month.abb),
+    date = make_date(year, month_num, 1)
+  ) %>%
+
+  mutate(
+    drug_category = case_when(
+      drug_type == "Prescription_Opioids" ~ "Legal",
+      drug_type %in% c("Heroin", "Synthetic_Opioids") ~ "Illegal",
+      TRUE ~ "Other"
+    )
+  ) %>%
+  
+  filter(drug_category != "Other")
+
+df_final <- df_clean %>%
+  group_by(state, date, year, drug_category) %>%
+  summarise(
+    mortality_rate = sum(mortality_rate, na.rm = TRUE),
+    deaths = sum(deaths, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+df_total <- df_final %>%
+  group_by(state, date, year) %>%
+  summarise(
+    mortality_rate = sum(mortality_rate, na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+##佛州的政策執行時間，我設定在2011年7月1日
+
+##date_line_1跟date_line_2是針對三波毒品氾濫。第二波（主要為Heroin氾濫）從2010年開始，故設定在2010年1月1日。第三波（主要為Synthetic_Opioids氾濫）從2013年開始，故設定在2013年1月1日。
+```{r}
+date_policy_real <- as.Date("2011-07-01")
+date_placebo <- as.Date("2005-01-01")
+date_line_1 <- as.Date("2010-01-01")
+date_line_2 <- as.Date("2013-01-01")
+```
+
+Part 1: 時間趨勢
+
+(1) 全部藥物 Mortality Rate 時間趨勢圖 (垂直線: 2011-07-01)
+```{r}
+p1_1 <- ggplot(df_total, aes(x = date, y = mortality_rate, color = state)) +
+  geom_line(size = 1) +
+  geom_vline(xintercept = date_policy_real, linetype = "dashed", color = "black") +
+  labs(title = "(1-3) Total Opioid Mortality Rate", subtitle = "Dashed Line: July 2011") +
+  theme_minimal()
+print(p1_1)
+```
+
+#計算時間區段平均
+```{r}
+mean_total <- df_total %>%
+  mutate(period = ifelse(date < as.Date("2011-07-01"), "Pre-Policy", "Post-Policy")) %>%
+  group_by(state, period) %>%
+  summarise(avg_rate = mean(mortality_rate), .groups = "drop")
+print(mean_total)
+```
+
+(2) 合法藥物 Mortality Rate 時間趨勢圖 (垂直線: 2011-07-01)
+```{r}
+p1_2 <- df_final %>% filter(drug_category == "Legal") %>%
+  ggplot(aes(x = date, y = mortality_rate, color = state)) +
+  geom_line(size = 1) +
+  geom_vline(xintercept = date_policy_real, linetype = "dashed", color = "black") +
+  labs(title = "(1-1) Legal (Prescription) Mortality Rate") +
+  theme_minimal()
+print(p1_2)
+```
+
+#計算時間區段平均
+```{r}
+mean_legal <- df_final %>%
+  filter(drug_category == "Legal") %>%
+  mutate(period = ifelse(date < as.Date("2011-07-01"), "Pre-Policy", "Post-Policy")) %>%
+  group_by(state, period) %>%
+  summarise(avg_rate = mean(mortality_rate), .groups = "drop")
+
+print(mean_legal)
+```
+
+(3) 非法藥物 Mortality Rate 時間趨勢圖 (垂直線: 2011-07-01)
+```{r}
+p1_3 <- df_final %>% filter(drug_category == "Illegal") %>%
+  ggplot(aes(x = date, y = mortality_rate, color = state)) +
+  geom_line(size = 1) +
+  geom_vline(xintercept = date_policy_real, linetype = "dashed", color = "black") +
+  labs(title = "(1-2) Illegal (Heroin/Synthetic) Mortality Rate") +
+  theme_minimal()
+print(p1_3)
+```
+
+#計算時間區段平均
+```{r}
+mean_illegal <- df_final %>%
+  filter(drug_category == "Illegal") %>%
+  mutate(period = ifelse(date < as.Date("2011-07-01"), "Pre-Policy", "Post-Policy")) %>%
+  group_by(state, period) %>%
+  summarise(avg_rate = mean(mortality_rate), .groups = "drop")
+
+print(mean_illegal)
+```
+
+Part 2: Difference（將兩州mortality rate相減，觀察同一時間節點的差異）
+
+```{r}
+plot_difference <- function(data, category_name) {
+  data_diff <- data %>%
+    select(date, state, mortality_rate) %>%
+    pivot_wider(names_from = state, values_from = mortality_rate) %>%
+    mutate(diff = Florida - Pennsylvania) %>%
+    filter(!is.na(diff))
+
+  ggplot(data_diff, aes(x = date, y = diff)) +
+    geom_line(color = "purple", size = 1) +
+    geom_hline(yintercept = 0, color = "gray50") +
+    geom_vline(xintercept = date_policy_real, linetype = "dashed", color = "black") +
+    labs(title = paste0("Difference (FL - PA): ", category_name),
+         y = "Rate Difference") +
+    theme_minimal()
+}
+```
+
+(1) 全部藥物 Mortality Rate Difference
+```{r}
+print(plot_difference(df_total, "Total All Drugs"))
+```
+
+#計算時間區段平均
+```{r}
+mean_diff_total <- df_total %>%
+  mutate(period = ifelse(date < as.Date("2011-07-01"), "Pre-Policy", "Post-Policy")) %>%
+  group_by(period) %>%
+  summarise(avg_rate = mean(mortality_rate), .groups = "drop")
+
+print(mean_diff_total)
+```
+
+(2) 合法藥物 Mortality Rate Difference
+```{r}
+df_legal <- df_final %>% filter(drug_category == "Legal")
+print(plot_difference(df_legal, "Legal Drugs"))
+```
+
+#計算時間區段平均
+```{r}
+mean_diff_legal <- df_final %>%
+  filter(drug_category == "Legal") %>%
+  mutate(period = ifelse(date < as.Date("2011-07-01"), "Pre-Policy", "Post-Policy")) %>%
+  group_by(period) %>%
+  summarise(avg_rate = mean(mortality_rate), .groups = "drop")
+
+print(mean_diff_legal)
+```
+
+(3) 非法藥物 Mortality Rate Difference
+```{r}
+df_illegal <- df_final %>% filter(drug_category == "Illegal")
+print(plot_difference(df_illegal, "Illegal Drugs"))
+```
+
+#計算時間區段平均
+```{r}
+mean_diff_illegal <- df_final %>%
+  filter(drug_category == "Illegal") %>%
+  mutate(period = ifelse(date < as.Date("2011-07-01"), "Pre-Policy", "Post-Policy")) %>%
+  group_by(period) %>%
+  summarise(avg_rate = mean(mortality_rate), .groups = "drop")
+
+print(mean_diff_illegal)
+```
+
+Part 3: Robust檢定
+
+```{r}
+df_pre_period <- df_final %>% filter(year < 2011)
+df_total_pre <- df_total %>% filter(year < 2011)
+```
+
+(1) 全部藥物 robust
+```{r}
+p3_1 <- ggplot(df_total_pre, aes(x = date, y = mortality_rate, color = state)) +
+  geom_line(size = 1) +
+  geom_vline(xintercept = date_placebo, linetype = "dotted", color = "red", size = 1) +
+  labs(title = "(3-3) Robustness Check: Total (Placebo 2005)", 
+  subtitle = "Focusing on Pre-2011 trends. Red line: Jan 2005") +
+  theme_minimal()
+
+print(p3_1)
+```
+
+(2) 合法藥物 robust
+```{r}
+p3_2 <- df_pre_period %>% filter(drug_category == "Legal") %>%
+  ggplot(aes(x = date, y = mortality_rate, color = state)) +
+  geom_line(size = 1) +
+  geom_vline(xintercept = date_placebo, linetype = "dotted", color = "red", size=1) +
+  labs(title = "(3-1) Robustness Check: Legal (Placebo 2005)") +
+  theme_minimal()
+
+print(p3_2)
+```
+
+(3) 非法藥物 robust
+```{r}
+p3_3 <- df_pre_period %>% filter(drug_category == "Illegal") %>%
+  ggplot(aes(x = date, y = mortality_rate, color = state)) +
+  geom_line(size = 1) +
+  geom_vline(xintercept = date_placebo, linetype = "dotted", color = "red", size=1) +
+  labs(title = "(3-2) Robustness Check: Illegal (Placebo 2005)") +
+  theme_minimal()
+
+print(p3_3)
+```
+
+
+```{r}
+cat("\n--- Statistical Robustness Check (Placebo Regression) ---\n")
+
+run_placebo_reg <- function(data, cat_name) {
+  data_reg <- data %>%
+    mutate(
+      treat = ifelse(state == "Florida", 1, 0),
+      placebo_post = ifelse(date >= date_placebo, 1, 0)
+    )
+  model <- feols(mortality_rate ~ treat * placebo_post | state + date, data = data_reg)
+  print(paste("Category:", cat_name))
+  print(model)
+}
+
+run_placebo_reg(df_total_pre, "Total")
+run_placebo_reg(df_pre_period %>% filter(drug_category=="Legal"), "Legal")
+run_placebo_reg(df_pre_period %>% filter(drug_category=="Illegal"), "Illegal")
+```
+
+Part 4: 三波毒品氾濫與特定藥物的關聯觀察
+
+##第二波（主要為Heroin氾濫）從2010年開始，故設定在2010年1月1日。第三波（主要為Synthetic_Opioids氾濫）從2013年開始，故設定在2013年1月1日。
+
+```{r}
+plot_specific_drug <- function(drug_name) {
+  df_clean %>%
+    filter(drug_type == drug_name) %>%
+    ggplot(aes(x = date, y = mortality_rate, color = state)) +
+    geom_line(size = 1) +
+    geom_vline(xintercept = date_line_1, linetype = "longdash", color = "gray40") +
+    geom_vline(xintercept = date_line_2, linetype = "longdash", color = "gray40") +
+    labs(title = paste("Trend: ", drug_name),
+         subtitle = "Lines: Jan 2010 & Jan 2013") +
+    theme_minimal()
+}
+```
+
+(1) Prescription_Opioids 時間趨勢
+```{r}
+print(plot_specific_drug("Prescription_Opioids"))
+```
+
+#計算時間區段平均
+```{r}
+mean_prescription_opioids <- df_clean %>%
+  filter(drug_type == "Prescription_Opioids") %>%
+  mutate(wave = case_when(
+    date < as.Date("2010-01-01") ~ "1st wave",
+    date >= as.Date("2010-01-01") & date < as.Date("2013-01-01") ~ "2nd wave",
+    date >= as.Date("2013-01-01") ~ "3rd wave",
+    TRUE ~ NA_character_
+  )) %>%
+  group_by(state, wave) %>%
+  summarise(avg_rate = mean(mortality_rate), .groups = "drop")
+
+print(mean_prescription_opioids)
+```
+
+(2) Heroin 時間趨勢
+```{r}
+print(plot_specific_drug("Heroin"))
+```
+
+#計算時間區段平均
+```{r}
+mean_heroin <- df_clean %>%
+  filter(drug_type == "Heroin") %>%
+  mutate(wave = case_when(
+    date < as.Date("2010-01-01") ~ "1st wave",
+    date >= as.Date("2010-01-01") & date < as.Date("2013-01-01") ~ "2nd wave",
+    date >= as.Date("2013-01-01") ~ "3rd wave",
+    TRUE ~ NA_character_
+  )) %>%
+  group_by(state, wave) %>%
+  summarise(avg_rate = mean(mortality_rate), .groups = "drop")
+
+print(mean_heroin)
+```
+
+(3) Synthetic_Opioids 時間趨勢
+```{r}
+print(plot_specific_drug("Synthetic_Opioids"))
+```
+
+#計算時間區段平均
+```{r}
+mean_synthetic_opioids <- df_clean %>%
+  filter(drug_type == "Synthetic_Opioids") %>%
+  mutate(wave = case_when(
+    date < as.Date("2010-01-01") ~ "1st wave",
+    date >= as.Date("2010-01-01") & date < as.Date("2013-01-01") ~ "2nd wave",
+    date >= as.Date("2013-01-01") ~ "3rd wave",
+    TRUE ~ NA_character_
+  )) %>%
+  group_by(state, wave) %>%
+  summarise(avg_rate = mean(mortality_rate), .groups = "drop")
+
+print(mean_synthetic_opioids)
+```
+
+
+
+```{r}
+df_regression <- df_final %>%
+  mutate(
+    treat = ifelse(state == "Florida", 1, 0),
+    post = ifelse(date >= as.Date("2011-07-01"), 1, 0)
+  )
+
+run_did_model <- function(data, category_name) {
+  
+  sub_data <- data %>% filter(drug_category == category_name)
+  
+  model <- feols(mortality_rate ~ treat * post, data = sub_data)
+  print(model)
+  print(summary(model))
+}
+
+run_did_model(df_regression, "Legal")
+run_did_model(df_regression, "Illegal")
+
+df_total_reg <- df_total %>%
+  mutate(
+    treat = ifelse(state == "Florida", 1, 0),
+    post = ifelse(date >= as.Date("2011-07-01"), 1, 0)
+  )
+
+model_total <- feols(mortality_rate ~ treat * post, data = df_total_reg)
+
+print(model_total)
+print(summary(model_total))
+```
+
