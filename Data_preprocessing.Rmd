@@ -1,6 +1,6 @@
 ---
-title: "final"
-author: '111071048'
+title: "Data_preprocessing"
+author: '111071048 Ya-Zhong Ko'
 date: "2025-12-13"
 output: html_document
 editor_options: 
