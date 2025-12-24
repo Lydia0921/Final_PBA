@@ -4,6 +4,7 @@ author: "Yung-Ni Chen"
 date: "2025-12-24"
 output: html_document
 ---
+Added the R Markdown file for the Difference-in-Differences analysis of Ohio's HB 93 policy. The code performs data visualization, calculates pre/post-policy mortality rates, and runs a regression model confirming a significant substitution effect toward illegal opioids relative to the control group (Michigan). Includes robustness checks (Placebo Test).
 
 ```{r setup, include=FALSE}
 library(tidyverse)
